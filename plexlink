@@ -1,0 +1,83 @@
+#!/bin/bash
+if [[ $EUID != 0 ]]; then
+	echo "Must be root to run plexlink. Exiting now."
+	exit
+fi
+
+#PLEXPATH="/var/lib/plexmediaserver/Library/Application\ Support/Plex\ Media\ Server"
+PLEXPATH='/var/lib/plexmediaserver/Library/Application Support/Plex Media Server'
+
+# Plex address
+PLEXADDR="192.168.1.100:32400"
+
+TYPES=()
+eval $(curl -s http://$PLEXADDR/library/sections | sed '/<Directory.*key="\([0-9]*\)".*title="\([a-zA-Z ]*\)".*/!d;s//TYPES+=("\2"); \2=\1/')
+
+QUIET=1
+[[ ! -d "$PLEXPATH"/Libraries ]] && mkdir -p "$PLEXPATH"/Libraries
+for i in "${TYPES[@]}"; do
+	[[ ! -d "$PLEXPATH"/Libraries/"$i" ]] && mkdir -p "$PLEXPATH"/Libraries/"$i"
+	[[ ! -f /usr/share/plexlist."$i" ]] && touch /usr/share/plexlist."$i"
+done
+
+while [[ $# > 0 ]]; do
+        key="$1"
+        case $key in
+            -i|--input)
+                INPUT=$(realpath "$2")
+                shift # past argument
+            ;;
+            -t|--type)
+                TYPE="$2"
+                shift # past argument
+            ;;
+            -q|--quiet)
+                QUIET=0
+            ;;
+            *)
+                    # unknown option
+            ;;
+        esac
+shift # past argument or value
+done
+
+function link() {
+        BASE=$(basename "$1")
+        if [[ `grep -c "$BASE" /usr/share/plexlist.$2` == 0 ]]; then
+		ans='Y'
+		if [[ $QUIET == 1 ]]; then
+			echo -n "Link $BASE to $2? [Y/N] "
+			read ans </dev/tty
+		fi
+		if [[ $ans == 'Y' ]]; then
+			ffprobe "$1" >/dev/null 2>&1
+			if [[ $? == 0 ]]; then
+				ln -s "$1" "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Libraries/$2/"
+				[[ $? == 0 ]] && return 0
+			fi
+		fi
+        fi
+	return 1
+}
+
+if [[ -f "$INPUT" && " ${TYPES[@]} " =~ " ${TYPE} " ]]; then
+	link "$INPUT" "$TYPE"
+        if [[ $? == 0 ]]; then
+                echo $INPUT >> /usr/share/plexlist.$TYPE
+		#[[ $QUIET == 1 ]] && echo "$INPUT linked to $TYPE."
+		curl -s http://$PLEXADDR/library/sections/${!TYPE}/refresh
+        fi
+
+elif [[ -d "$INPUT" && " ${TYPES[@]} " =~ " ${TYPE} " ]]; then
+	add=0
+        find "$INPUT" -type f -size +100M | while read i; do
+		link "$i" "$TYPE"
+        	if [[ $? == 0 ]]; then
+			add=1
+        	        echo $i >> /usr/share/plexlist.$TYPE
+			#[[ $QUIET == 1 ]] && echo "$i linked to $TYPE."
+        	fi
+        done
+	wait
+	[[ $add == 1 ]] && curl -s http://$PLEXADDR/library/sections/${!TYPE}/refresh
+fi
